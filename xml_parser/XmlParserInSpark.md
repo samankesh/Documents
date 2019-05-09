@@ -1,6 +1,6 @@
-#Flattening Nested Many-to-Many Relationships in XML Files
+# Flattening Nested Many-to-Many Relationships in XML Files
 
-##Introduction
+## Introduction
 In most of the 2000's, XML was a widely used semi-structured format for data storage. It has since declined in popularity to other formats such as JSON but there are use cases for parsing XML today far more often than one might think.
 The most obvious use case is for processing historical XML files (yes! 15-20 year old data) but there are still many systems that output XML files for logs among other things.
 
@@ -13,7 +13,7 @@ First, the raw data is described to show the various nuances of the data structu
 Second, the difficulties in processing the data in a distributed system is laid out.
 Finally, the implemented solution is presented and limitations are discussed.
 
-###Raw Data Files
+### Raw Data Files
 A typical file is structured in the following nested object structure:
 
 	<NAXML-POSJournal>
@@ -77,7 +77,7 @@ Looking at such a file can quickly feel like a bird's nest in circuits or spaget
 
 An XSD file describes the nested structure of the data and can be used to determine object hierarchy which is the inspiration of this proposed solution; to flatten the data into the way the XSD file is flattened. More on this soon!
 
-###The Distributed Problem
+### The Distributed Problem
 Before discussion of the problems in distributed processing of these NAXML files, it is important to note that there are many XML parsing libraries in all modern langauges to process such files. The problem becomes of how to process thousands or millions of these files in an efficient manner using a Spark cluster. 
 
 At first glance, it might seem trivial to parse this file using Spark. After all, Spark has a native XML parser and one could create the underlying *schema* using StructType, MapType and ArrayType to match the nested objects inside every file. A few attempts at this and it becomes clear that it is impossible to define a schema that allows us to capture all the nested objects since the depth is unknown. *Limitations of the Spark XML Parser* as discussed below.
@@ -87,14 +87,14 @@ To parse the content of the file correctly, every opening tag must be matched wi
 
 This problem is much more complicated to solve and the proposed solution does not present a viable option for partially reading in the XML file; hence allowing a file to be read partially by multiple executors.
 
-###Limitations of the [Spark XML Parser](https://github.com/databricks/spark-xml)
+### Limitations of the [Spark XML Parser](https://github.com/databricks/spark-xml)
 Even if a schema to accomodate the nested structure could be constructed, the existing Spark XML parser is unable to process this file.
 The Spark XML Parser is very simple and designed for a very narrow use case. In short, it expects a consistent and repeated structure that it can parse into rows of StructType.
 For example, a root tag, which could be `ReportJournal`, with potentially the row tag as each row of events but since the events don't have a consistent `rowTag` this option does little to return a dataframe of rows.
 It would be ideal to be able to define a rowTag as an interface of *EventType* where `SalesEvent` and `FinancialEvent` all implement the interface.
 The only way this would work (which it still wouldn't) is if the schema of `rowTag` was a very large flattened structure of all the various unique "keys" in all implementations of the *EventType* interface so the output row is a StructType that contains every possible key of all objects.
 
-##The Solution
+## The Solution
 As alluded to earlier, the solution uses the structure of the XSD to create a complete map of every file's content flattened. Using a relational database model approach, every distinct "tag" type is defined as a table, every instance of the tag type is inserted as a row and given a unique key as well as a foreign key as to which tag it was nested in.
 As the XML structure is traversed recursively, the parent-child relationship is clear.
 The result is a series of dataframes, one for each tag type representing a "table" of rows.
@@ -152,7 +152,7 @@ If something is ommited, such as name or inSchool, it is left out of the final t
 
 This logic ensures that all rows of the table "hobbies" or "user" are consistent in schema. The current solution expects this dictionary to be pre-defined. If an XSD is given, this dictionary can be automatically created from parsing the XSD; however, this is out of scope for this document.
 
-###The implementation
+### The implementation
 The implementation follows the logic below:
 
 1. Each file is read as a wholeTextFile.
@@ -169,7 +169,7 @@ The implementation follows the logic below:
 
 1. The parent's primary key is saved for the node as a foreign key
 
-####Parsing Logic
+#### Parsing Logic
 	from pyspark.sql import functions as f
 	parser = XMLParser(data_dictionary)
 	file_rdd = spark.sparkContext.wholeTextFiles(directory).map(parser.parseAll)
@@ -196,7 +196,7 @@ The second step is to re-read the data and explode each of the data types into i
 
 The final output is a dictionary of dataframes.
 
-####The Parsing Object
+#### The Parsing Object
 	import xml.etree.ElementTree as ET
 	from pyspark.sql import Row
 	from pyspark.sql.types import *
@@ -225,8 +225,8 @@ The final output is a dictionary of dataframes.
 	                "PROCESS_TS": str(timestamp),
 	                "CURROPT_RECORD": ""
 	            }
-	            # Filling in the attributes from the element
-	            # NOTE: This loop does the job of filling in None for all the values we care about
+	            #  Filling in the attributes from the element
+	            #  NOTE: This loop does the job of filling in None for all the values we care about
 	            for potential_attribute in self._xml_data_dictionary[elem_tag]:
 	                elem_data[potential_attribute] = elem.get(potential_attribute, None)
 	            for child in list(elem):
@@ -239,8 +239,8 @@ The final output is a dictionary of dataframes.
 	                process_child(child, generated_elem_guid, elem_tag)
 	            if elem_tag not in self._xml_data_dictionary:
 	                return
-	            # We shouldn't need this fill_missing_cols anymore
-	            # but leaving in for further testing
+	            #  We shouldn't need this fill_missing_cols anymore
+	            #  but leaving in for further testing
 	            ready_data = fill_missing_cols(elem_data, elem_tag)
 	            output[elem_tag].append(ready_data)
 		    
@@ -268,27 +268,27 @@ The function `processChild` starts at the given node, create's a dictionary for 
 
 The namespace of the XML tags are removed as namespacing creates often difficult to read large strings; however, it is noted that if namespacing is needed, the `remove_tag_namespace` funtion can be bypassed.
 
-####The GUID Generation
+#### The GUID Generation
 The primary key is defined as a sha224 hash using the timestamp the executor began processing the file, the filename, the node's tagname, and a randomly generated number.
 The idea here is that if two executors process the same file, at the exact same moment, then each tag would still get a unique key based on the random number generated. There is a chance for collision but it is assumed to be acceptable.
 Given multiple executors can process the same file for redundancy, it is expected that this wouldn't happen at the exact same timestamp and in the case that it does, the machines random number generators would not give the same number.
 This is a topic for future improvement.
 
-###Limitations
+### Limitations
 The biggest limitation of this solution is the requirement to read `wholeTextFiles`. Since XML can have a great deal of repetition, compressed files on disk do not represent an accurate size of the actual file in memory. This can lead to high memory requirements and make the process prone to failure due to memory limitations if files are inconsistent in content/size.
 
 Second, given a file must be processed by one executor in one pass to ensure consistent primary and foreign keys, the first step does not achieve true parallelism. The best performance would come from having enough executors as a factor of the number of files (10000 files with 100 executors?). Performance when 100 very large files are processed by 100 executors cannot be increased by scaling the cluster.
 
-###Future upgrades
+### Future upgrades
 
-####Using the XSD
+#### Using the XSD
 As mentioned, the data dictionary supplied to the parser object can be defined and created based on an XSD file.
 
-####Very Large Individual Files
+#### Very Large Individual Files
 There are alternative XML parsing libraries in Python that allow for parsing of XML in chuncks instead of having to read the entire file into memory.
 This can be taken advantage of for parsing very large files across multiple executors alleviating the requirement to read wholeTextFiles. In this case, an alternative GUID generation logic should be used, perhaps, using only filenames and ensuring all filenames are unique witin a batch.
 
-##Conclusion
+## Conclusion
 This XML parser is an alternative approach to Spark's native XML parser given its limitations. 
 There are equal but different limitations with this approach.
 The intent here is to suggest the methodology, logic, and thinking when shifting to the paradigm of parallel processing with a concrete example and a prototype.
